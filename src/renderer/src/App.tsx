@@ -37,6 +37,7 @@ interface Goals {
 interface GrowthNairaState {
   balance: number
   lastSettlementRunDate: string
+  lastSettledDate: string
   refillCount: number
   lastDailyChangePct: number
 }
@@ -194,6 +195,12 @@ function migrateLegacyUtcDateKeysOnce(): void {
       if (typeof gn?.lastSettlementRunDate === 'string') {
         if (gn.lastSettlementRunDate === utcToday) gn.lastSettlementRunDate = localToday
         if (gn.lastSettlementRunDate === utcYesterday) gn.lastSettlementRunDate = localYesterday
+        if (typeof gn.lastSettledDate === 'string') {
+          if (gn.lastSettledDate === utcToday) gn.lastSettledDate = localToday
+          if (gn.lastSettledDate === utcYesterday) gn.lastSettledDate = localYesterday
+        } else {
+          gn.lastSettledDate = formatDateOnly(addDays(parseDateOnly(gn.lastSettlementRunDate), -1))
+        }
         localStorage.setItem(GROWTH_NAIRA_STORAGE_KEY, JSON.stringify(gn))
       }
     } catch {
@@ -208,10 +215,12 @@ function settleGrowthNaira(history: DailyMetrics[]): GrowthNairaState {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   const todayKey = formatDateOnly(today)
+  const yesterdayKey = formatDateOnly(addDays(today, -1))
 
   const defaultState: GrowthNairaState = {
     balance: 100,
     lastSettlementRunDate: todayKey,
+    lastSettledDate: yesterdayKey,
     refillCount: 0,
     lastDailyChangePct: 0
   }
@@ -224,25 +233,33 @@ function settleGrowthNaira(history: DailyMetrics[]): GrowthNairaState {
     typeof parsedExisting.lastSettlementRunDate === 'string' &&
     typeof parsedExisting.refillCount === 'number' &&
     typeof parsedExisting.lastDailyChangePct === 'number'
-      ? {
-          balance: Math.max(0, parsedExisting.balance),
-          lastSettlementRunDate: parsedExisting.lastSettlementRunDate,
-          refillCount: Math.max(0, parsedExisting.refillCount),
-          lastDailyChangePct: parsedExisting.lastDailyChangePct
-        }
+      ? (() => {
+          const inferredLastSettledDate =
+            typeof parsedExisting.lastSettledDate === 'string' && parsedExisting.lastSettledDate.length > 0
+              ? parsedExisting.lastSettledDate
+              : formatDateOnly(addDays(parseDateOnly(parsedExisting.lastSettlementRunDate), -1))
+          return {
+            balance: Math.max(0, parsedExisting.balance),
+            lastSettlementRunDate: parsedExisting.lastSettlementRunDate,
+            lastSettledDate: inferredLastSettledDate,
+            refillCount: Math.max(0, parsedExisting.refillCount),
+            lastDailyChangePct: parsedExisting.lastDailyChangePct
+          }
+        })()
       : defaultState
 
-  if (state.lastSettlementRunDate >= todayKey) {
+  if (state.lastSettledDate >= yesterdayKey) {
+    state.lastSettlementRunDate = todayKey
     localStorage.setItem(GROWTH_NAIRA_STORAGE_KEY, JSON.stringify(state))
     return state
   }
 
   const historyByDate = new Map(history.map((entry) => [entry.date, entry]))
   let rollingBalance = state.balance
-  let cursor = parseDateOnly(state.lastSettlementRunDate)
+  let cursor = addDays(parseDateOnly(state.lastSettledDate), 1)
   let lastDailyChangePct = state.lastDailyChangePct
 
-  while (formatDateOnly(cursor) < todayKey) {
+  while (formatDateOnly(cursor) <= yesterdayKey) {
     const settlementDateKey = formatDateOnly(cursor)
     const dayMetric = historyByDate.get(settlementDateKey)
     const dayScoredPerfect = dayMetric?.score === 100
@@ -261,6 +278,7 @@ function settleGrowthNaira(history: DailyMetrics[]): GrowthNairaState {
   const nextState: GrowthNairaState = {
     balance: rollingBalance,
     lastSettlementRunDate: todayKey,
+    lastSettledDate: yesterdayKey,
     refillCount: state.refillCount,
     lastDailyChangePct
   }
@@ -500,10 +518,12 @@ function App(): React.JSX.Element {
   const weeklyInsightLastAutoSignatureRef = useRef<string | null>(null)
   const weeklyInsightRateLimitedUntilRef = useRef<number>(0)
   const [growthNaira, setGrowthNaira] = useState<GrowthNairaState>(() => {
-    const todayKey = formatDateOnly(new Date())
+    const today = new Date()
+    const todayKey = formatDateOnly(today)
     return {
       balance: 100,
       lastSettlementRunDate: todayKey,
+      lastSettledDate: formatDateOnly(addDays(today, -1)),
       refillCount: 0,
       lastDailyChangePct: 0
     }
@@ -682,13 +702,50 @@ function App(): React.JSX.Element {
   }
 
   const refillGrowthNaira = () => {
-    const todayKey = formatDateOnly(new Date())
+    const today = new Date()
+    const todayKey = formatDateOnly(today)
     const nextState: GrowthNairaState = {
       balance: 100,
       lastSettlementRunDate: todayKey,
+      lastSettledDate: growthNaira.lastSettledDate || formatDateOnly(addDays(today, -1)),
       refillCount: growthNaira.refillCount + 1,
       lastDailyChangePct: 0
     }
+    localStorage.setItem(GROWTH_NAIRA_STORAGE_KEY, JSON.stringify(nextState))
+    setGrowthNaira(nextState)
+  }
+
+  const recalculateGrowthNairaFromHistory = () => {
+    const today = new Date()
+    const todayKey = formatDateOnly(today)
+    const yesterdayKey = formatDateOnly(addDays(today, -1))
+
+    const scoredDays = [...allHistory]
+      .filter((entry) => entry.date <= yesterdayKey)
+      .sort((a, b) => a.date.localeCompare(b.date))
+
+    let balance = 100
+    let lastDailyChangePct = 0
+
+    for (const day of scoredDays) {
+      const dayChangePct = day.score === 100 ? 1 : -2
+      balance = balance * (1 + dayChangePct / 100)
+      if (balance < 0.01) {
+        balance = 0
+      } else {
+        balance = Number.parseFloat(balance.toFixed(2))
+      }
+      lastDailyChangePct = dayChangePct
+    }
+
+    const nextState: GrowthNairaState = {
+      balance,
+      lastSettlementRunDate: todayKey,
+      lastSettledDate: yesterdayKey,
+      refillCount: growthNaira.refillCount,
+      lastDailyChangePct
+    }
+
     localStorage.setItem(GROWTH_NAIRA_STORAGE_KEY, JSON.stringify(nextState))
     setGrowthNaira(nextState)
   }
@@ -1198,6 +1255,9 @@ function App(): React.JSX.Element {
                   <span>Initial grant: 100 GN</span>
                   <span>Refills used: {growthNaira.refillCount}</span>
                 </div>
+                <button className="outline-button" onClick={recalculateGrowthNairaFromHistory}>
+                  Recalculate GN
+                </button>
                 {growthNaira.balance <= 0 && (
                   <button className="primary-button gn-refill-button" onClick={refillGrowthNaira}>
                     Refill To 100 GN

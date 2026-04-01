@@ -45,6 +45,24 @@ export class GitHubTracker {
     })
   }
 
+  private getLocalDayStartString(): string {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day} 00:00:00`
+  }
+
+  private async getRepoAuthorEmail(repoPath: string): Promise<string | null> {
+    try {
+      const email = await this.runGit(['config', '--get', 'user.email'], repoPath)
+      const normalized = email.trim()
+      return normalized.length > 0 ? normalized : null
+    } catch {
+      return null
+    }
+  }
+
   private normalizeRepoPaths(data: GitStatusPayload | undefined): string[] {
     const fromList = Array.isArray(data?.repoPaths) ? data.repoPaths : []
     const fromSingle = data?.repoPath ? [data.repoPath] : []
@@ -58,14 +76,26 @@ export class GitHubTracker {
   private async countCommitsForRepo(repoPath: string): Promise<number> {
     if (!existsSync(repoPath)) return 0
 
-    const since = new Date()
-    since.setHours(0, 0, 0, 0)
-    const sinceIso = since.toISOString()
+    const sinceLocal = this.getLocalDayStartString()
 
     await this.runGit(['rev-parse', '--is-inside-work-tree'], repoPath)
-    const countRaw = await this.runGit(['rev-list', '--count', `--since=${sinceIso}`, 'HEAD'], repoPath)
-    const count = Number.parseInt(countRaw, 10)
-    return Number.isFinite(count) ? count : 0
+    const authorEmail = await this.getRepoAuthorEmail(repoPath)
+    const logArgs = ['log', '--all', `--since=${sinceLocal}`, '--pretty=format:%H']
+    if (authorEmail) {
+      logArgs.push(`--author=${authorEmail}`)
+    }
+
+    const rawHashes = await this.runGit(logArgs, repoPath)
+    if (!rawHashes) return 0
+
+    const uniqueHashes = new Set(
+      rawHashes
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+    )
+
+    return uniqueHashes.size
   }
 
   private async refreshCommits(repoPaths: string[]): Promise<void> {
