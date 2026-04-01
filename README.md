@@ -23,6 +23,31 @@ The app has two core pages:
 1. Dashboard
 2. Metrics
 
+## Product tour
+
+> Add your captures to `docs/media/` using the filenames below so they render automatically on GitHub.
+
+### Dashboard
+
+![Dashboard view](docs/media/dashboard.png)
+
+### Metrics
+
+![Metrics view](docs/media/metrics.png)
+
+### Growth Naira
+
+![Growth Naira view](docs/media/gn.png)
+
+### PDF Reader
+
+![PDF reader view](docs/media/reader.png)
+
+### AI Weekly Insight
+
+![AI weekly insight panel](docs/media/ai-insight.png)
+
+
 ### Dashboard: 4 integrated tracking cards
 
 1. Tech4mation (Mon-Fri active)
@@ -88,6 +113,18 @@ The app stores local tracking state such as:
 4. GN settlement state
 5. job hunting URL log
 6. daily AI insight cache
+
+## Media capture guide
+
+For best results on GitHub:
+
+1. Use PNG screenshots at 1600x900 (or similar 16:9)
+2. Keep UI zoom at 100%
+3. Record demo GIF at 10-15 seconds showing:
+   - dashboard cards updating
+   - tab switch to metrics
+   - AI insight refresh
+   - PDF open/reopen flow
 
 ## Environment variables
 
