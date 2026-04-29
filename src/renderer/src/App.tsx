@@ -18,10 +18,10 @@ import { DailyMetrics, getWeeklyHistory, saveDailyMetrics } from './utils/histor
 
 interface Metrics {
   github: { count: number; completed: boolean; lastChecked: number }
-  file: { lastEdit: number; completed: boolean }
+  file: { linkedinUrl: string; completed: boolean; lastUpdated: number }
+  algoTrading: { lastEdit: number; completed: boolean }
   reading: { pages: number; completed: boolean; target: number }
   social: {
-    linkedinUrl: string
     indeedUrl: string
     wellfoundUrl: string
     completed: boolean
@@ -79,9 +79,14 @@ interface WeeklyInsightDailyCache {
 }
 
 interface DailyApplicationUrls {
-  linkedin: string
   indeed: string
   wellfound: string
+  linkedin?: string
+  submittedAt: number
+}
+
+interface DailyQuantFinanceUrls {
+  linkedin: string
   submittedAt: number
 }
 
@@ -110,6 +115,7 @@ function getNotificationIntervalMs(now: Date): number {
 
 const GROWTH_NAIRA_STORAGE_KEY = 'growth-naira-state'
 const APPLICATION_ID_LOG_KEY = 'application-id-log'
+const QUANT_FINANCE_LINK_LOG_KEY = 'quant-finance-link-log'
 const WEEKLY_INSIGHT_DAILY_CACHE_KEY = 'weekly-insight-daily-cache-v1'
 const LEGACY_UTC_DATE_MIGRATION_KEY = 'migration-local-date-keys-v1'
 const URGENT_NOTIFICATION_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5a0f16"/><text x="32" y="42" text-anchor="middle" font-size="32" fill="#ffb8c0">!</text></svg>')}`
@@ -263,7 +269,7 @@ function settleGrowthNaira(history: DailyMetrics[]): GrowthNairaState {
     const settlementDateKey = formatDateOnly(cursor)
     const dayMetric = historyByDate.get(settlementDateKey)
     const dayScoredPerfect = dayMetric?.score === 100
-    const dayChangePct = dayScoredPerfect ? 1 : -2
+    const dayChangePct = dayScoredPerfect ? 1 : -1
     rollingBalance = rollingBalance * (1 + dayChangePct / 100)
     if (rollingBalance < 0.01) {
       rollingBalance = 0
@@ -291,16 +297,35 @@ function isTech4mationActiveDay(date: Date): boolean {
   return day >= 1 && day <= 5
 }
 
+function isQuantFinanceActiveDay(date: Date): boolean {
+  const day = date.getDay()
+  return day === 1 || day === 4
+}
+
 function isJobHuntingActiveDay(date: Date): boolean {
   const day = date.getDay()
-  return day >= 1 && day <= 5
+  return day === 2 || day === 3 || day === 6
+}
+
+function isAlgoTradingActiveDay(date: Date): boolean {
+  const day = date.getDay()
+  return day === 5 || day === 6 || day === 0
 }
 
 function isDayFullyCompleted(metric: DailyMetrics): boolean {
   const dayDate = new Date(metric.date)
   const tech4mationCompleted = isTech4mationActiveDay(dayDate) ? metric.githubCompleted : true
+  const quantFinanceCompleted = isQuantFinanceActiveDay(dayDate) ? metric.fileCompleted : true
+  const algoTradingCompleted = isAlgoTradingActiveDay(dayDate) ? (metric.algoTradingCompleted ?? false) : true
   const socialCompleted = isJobHuntingActiveDay(dayDate) ? (metric.socialCompleted ?? false) : true
-  return tech4mationCompleted && metric.fileCompleted && metric.readingCompleted && socialCompleted
+  
+  return (
+    tech4mationCompleted &&
+    quantFinanceCompleted &&
+    algoTradingCompleted &&
+    metric.readingCompleted &&
+    socialCompleted
+  )
 }
 
 function normalizeUrl(value: string): string | null {
@@ -315,7 +340,7 @@ function normalizeUrl(value: string): string | null {
   }
 }
 
-function normalizeSiteUrl(rawUrl: string, site: 'linkedin' | 'indeed' | 'wellfound'): string | null {
+function normalizeSiteUrl(rawUrl: string, site: 'linkedin' | 'indeed' | 'wellfound' | 'udemy'): string | null {
   const normalized = normalizeUrl(rawUrl)
   if (!normalized) return null
 
@@ -323,6 +348,7 @@ function normalizeSiteUrl(rawUrl: string, site: 'linkedin' | 'indeed' | 'wellfou
   if (site === 'linkedin' && !host.includes('linkedin.com')) return null
   if (site === 'indeed' && !host.includes('indeed.')) return null
   if (site === 'wellfound' && !host.includes('wellfound.com')) return null
+  if (site === 'udemy' && !host.includes('udemy.com')) return null
 
   return normalized
 }
@@ -343,7 +369,6 @@ function getSocialStatusForDate(date: string) {
   const todayRecord = log[date]
   if (!todayRecord) {
     return {
-      linkedinUrl: '',
       indeedUrl: '',
       wellfoundUrl: '',
       completed: false,
@@ -355,15 +380,48 @@ function getSocialStatusForDate(date: string) {
     .filter(([recordDate]) => recordDate < date)
     .map(([, record]) => record)
 
-  const linkedinUnique = !formerRecords.some((record) => record.linkedin === todayRecord.linkedin)
   const indeedUnique = !formerRecords.some((record) => record.indeed === todayRecord.indeed)
   const wellfoundUnique = !formerRecords.some((record) => record.wellfound === todayRecord.wellfound)
 
   return {
-    linkedinUrl: todayRecord.linkedin,
     indeedUrl: todayRecord.indeed,
     wellfoundUrl: todayRecord.wellfound,
-    completed: linkedinUnique && indeedUnique && wellfoundUnique,
+    completed: indeedUnique && wellfoundUnique,
+    lastUpdated: todayRecord.submittedAt
+  }
+}
+
+function getQuantFinanceLinkLog(): Record<string, DailyQuantFinanceUrls> {
+  const raw = localStorage.getItem(QUANT_FINANCE_LINK_LOG_KEY)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, DailyQuantFinanceUrls>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function getQuantFinanceStatusForDate(date: string) {
+  const log = getQuantFinanceLinkLog()
+  const todayRecord = log[date]
+  if (!todayRecord) {
+    return {
+      linkedinUrl: '',
+      completed: false,
+      lastUpdated: 0
+    }
+  }
+
+  const formerRecords = Object.entries(log)
+    .filter(([recordDate]) => recordDate < date)
+    .map(([, record]) => record)
+
+  const linkedinUnique = !formerRecords.some((record) => record.linkedin === todayRecord.linkedin)
+
+  return {
+    linkedinUrl: todayRecord.linkedin,
+    completed: linkedinUnique,
     lastUpdated: todayRecord.submittedAt
   }
 }
@@ -472,10 +530,10 @@ function renderInsightText(text: string): React.ReactNode {
 function App(): React.JSX.Element {
   const [metrics, setMetrics] = useState<Metrics>({
     github: { count: 0, completed: false, lastChecked: 0 },
-    file: { lastEdit: 0, completed: false },
+    file: { linkedinUrl: '', completed: false, lastUpdated: 0 },
+    algoTrading: { lastEdit: 0, completed: false },
     reading: { pages: 0, completed: false, target: 10 },
     social: {
-      linkedinUrl: '',
       indeedUrl: '',
       wellfoundUrl: '',
       completed: false,
@@ -498,12 +556,16 @@ function App(): React.JSX.Element {
 
   const [loading, setLoading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showQuantFinanceModal, setShowQuantFinanceModal] = useState(false)
   const [showApplicationModal, setShowApplicationModal] = useState(false)
+  const [quantFinanceForm, setQuantFinanceForm] = useState({
+    linkedinUrl: ''
+  })
   const [applicationForm, setApplicationForm] = useState({
-    linkedinUrl: '',
     indeedUrl: '',
     wellfoundUrl: ''
   })
+  const [quantFinanceFormError, setQuantFinanceFormError] = useState<string | null>(null)
   const [applicationFormError, setApplicationFormError] = useState<string | null>(null)
   const [goalEditor, setGoalEditor] = useState<{ type: GoalType; value: number } | null>(null)
   const [history, setHistory] = useState<DailyMetrics[]>([])
@@ -528,11 +590,21 @@ function App(): React.JSX.Element {
       lastDailyChangePct: 0
     }
   })
-  const tech4mationActiveToday = isTech4mationActiveDay(new Date())
-  const jobHuntingActiveToday = isJobHuntingActiveDay(new Date())
+  const [currentDateKey, setCurrentDateKey] = useState<string>(() => dateKey(new Date()))
+  const todayDate = useMemo(() => parseDateOnly(currentDateKey), [currentDateKey])
+  const tech4mationActiveToday = isTech4mationActiveDay(todayDate)
+  const algoTradingActiveToday = isAlgoTradingActiveDay(todayDate)
+  const jobHuntingActiveToday = isJobHuntingActiveDay(todayDate)
+  const quantFinanceActiveToday = isQuantFinanceActiveDay(todayDate)
 
   const performanceScore = useMemo(() => {
-    const taskStates = [metrics.file.completed, metrics.reading.completed]
+    const taskStates = [metrics.reading.completed]
+    if (quantFinanceActiveToday) {
+      taskStates.push(metrics.file.completed)
+    }
+    if (algoTradingActiveToday) {
+      taskStates.push(metrics.algoTrading.completed)
+    }
     if (jobHuntingActiveToday) {
       taskStates.push(metrics.social.completed)
     }
@@ -542,7 +614,7 @@ function App(): React.JSX.Element {
 
     const completedCount = taskStates.filter(Boolean).length
     return taskStates.length === 0 ? 0 : Math.round((completedCount / taskStates.length) * 100)
-  }, [metrics, tech4mationActiveToday, jobHuntingActiveToday])
+  }, [metrics, tech4mationActiveToday, algoTradingActiveToday, jobHuntingActiveToday, quantFinanceActiveToday])
   const latestPerformanceScoreRef = useRef(performanceScore)
 
   useEffect(() => {
@@ -552,6 +624,34 @@ function App(): React.JSX.Element {
   useEffect(() => {
     migrateLegacyUtcDateKeysOnce()
   }, [])
+
+  useEffect(() => {
+    const checkDateRollover = () => {
+      const nowKey = dateKey(new Date())
+      if (nowKey !== currentDateKey) {
+        setMetrics({
+          github: { count: 0, completed: false, lastChecked: 0 },
+          file: { linkedinUrl: '', completed: false, lastUpdated: 0 },
+          algoTrading: { lastEdit: 0, completed: false },
+          reading: { pages: 0, completed: false, target: goals.reading },
+          social: { indeedUrl: '', wellfoundUrl: '', completed: false, lastUpdated: 0 }
+        })
+        setCurrentDateKey(nowKey)
+      }
+    }
+    checkDateRollover()
+    const id = setInterval(checkDateRollover, 30_000)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') checkDateRollover()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', checkDateRollover)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', checkDateRollover)
+    }
+  }, [currentDateKey, goals.reading])
 
   const fetchMetrics = async () => {
     setLoading(true)
@@ -571,10 +671,11 @@ function App(): React.JSX.Element {
         }))
       }
 
-      const fileStatus = await window.electron.ipcRenderer.invoke('get-file-edit-status')
-      setMetrics((prev) => ({ ...prev, file: fileStatus }))
-
       const today = dateKey(new Date())
+      const quantFinanceStatus = getQuantFinanceStatusForDate(today)
+      const algoTradingStatus = await window.electron.ipcRenderer.invoke('get-algo-trading-file-edit-status')
+      setMetrics((prev) => ({ ...prev, file: quantFinanceStatus, algoTrading: algoTradingStatus }))
+
       const readingData = JSON.parse(localStorage.getItem(`reading-${today}`) || '{"pages": 0}')
       setMetrics((prev) => ({
         ...prev,
@@ -588,7 +689,6 @@ function App(): React.JSX.Element {
       const socialStatus = jobHuntingActiveToday
         ? getSocialStatusForDate(today)
         : {
-            linkedinUrl: '',
             indeedUrl: '',
             wellfoundUrl: '',
             completed: false,
@@ -612,6 +712,7 @@ function App(): React.JSX.Element {
       githubCount: metrics.github.count,
       githubCompleted: metrics.github.completed,
       fileCompleted: metrics.file.completed,
+      algoTradingCompleted: metrics.algoTrading.completed,
       readingPages: metrics.reading.pages,
       readingCompleted: metrics.reading.completed,
       socialCompleted: metrics.social.completed,
@@ -633,7 +734,7 @@ function App(): React.JSX.Element {
     fetchMetrics()
     const interval = setInterval(fetchMetrics, 300000)
     return () => clearInterval(interval)
-  }, [config, goals])
+  }, [config, goals, currentDateKey, quantFinanceActiveToday, jobHuntingActiveToday, tech4mationActiveToday, algoTradingActiveToday])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof Notification === 'undefined') return
@@ -728,7 +829,7 @@ function App(): React.JSX.Element {
     let lastDailyChangePct = 0
 
     for (const day of scoredDays) {
-      const dayChangePct = day.score === 100 ? 1 : -2
+      const dayChangePct = day.score === 100 ? 1 : -1
       balance = balance * (1 + dayChangePct / 100)
       if (balance < 0.01) {
         balance = 0
@@ -755,7 +856,6 @@ function App(): React.JSX.Element {
     const log = getApplicationIdLog()
     const todayRecord = log[today]
     setApplicationForm({
-      linkedinUrl: todayRecord?.linkedin || '',
       indeedUrl: todayRecord?.indeed || '',
       wellfoundUrl: todayRecord?.wellfound || ''
     })
@@ -763,14 +863,49 @@ function App(): React.JSX.Element {
     setShowApplicationModal(true)
   }
 
+  const openQuantFinanceModal = () => {
+    const today = dateKey(new Date())
+    const log = getQuantFinanceLinkLog()
+    const todayRecord = log[today]
+    setQuantFinanceForm({
+      linkedinUrl: todayRecord?.linkedin || ''
+    })
+    setQuantFinanceFormError(null)
+    setShowQuantFinanceModal(true)
+  }
+
+  const saveQuantFinanceLink = () => {
+    const linkedinUrl = normalizeSiteUrl(quantFinanceForm.linkedinUrl, 'linkedin')
+    if (!linkedinUrl) {
+      setQuantFinanceFormError('Please paste a valid LinkedIn URL.')
+      return
+    }
+
+    const today = dateKey(new Date())
+    const log = getQuantFinanceLinkLog()
+    log[today] = {
+      linkedin: linkedinUrl,
+      submittedAt: Date.now()
+    }
+    localStorage.setItem(QUANT_FINANCE_LINK_LOG_KEY, JSON.stringify(log))
+
+    const quantStatus = getQuantFinanceStatusForDate(today)
+    setMetrics((prev) => ({
+      ...prev,
+      file: quantStatus
+    }))
+
+    setQuantFinanceFormError(null)
+    setShowQuantFinanceModal(false)
+  }
+
   const saveApplicationIds = () => {
-    const linkedinUrl = normalizeSiteUrl(applicationForm.linkedinUrl, 'linkedin')
     const indeedUrl = normalizeSiteUrl(applicationForm.indeedUrl, 'indeed')
     const wellfoundUrl = normalizeSiteUrl(applicationForm.wellfoundUrl, 'wellfound')
 
-    if (!linkedinUrl || !indeedUrl || !wellfoundUrl) {
+    if (!indeedUrl || !wellfoundUrl) {
       setApplicationFormError(
-        'Please paste valid LinkedIn, Indeed, and Wellfound URLs.'
+        'Please paste valid Indeed and Wellfound URLs.'
       )
       return
     }
@@ -778,7 +913,6 @@ function App(): React.JSX.Element {
     const today = dateKey(new Date())
     const log = getApplicationIdLog()
     log[today] = {
-      linkedin: linkedinUrl,
       indeed: indeedUrl,
       wellfound: wellfoundUrl,
       submittedAt: Date.now()
@@ -1056,6 +1190,7 @@ function App(): React.JSX.Element {
   const dashboardCards = [
     {
       id: 'github',
+      isVisible: tech4mationActiveToday,
       icon: <Github size={18} />,
       title: 'Tech4mation',
       subtitle: `Minimum ${goals.github} local git commits per day across configured repos`,
@@ -1076,22 +1211,49 @@ function App(): React.JSX.Element {
     },
     {
       id: 'file',
+      isVisible: quantFinanceActiveToday,
       icon: <FileText size={18} />,
-      title: 'Quant Finance/Algo',
-      subtitle: 'Daily edit of Quant Statisticals files',
-      badge: metrics.file.completed ? 'Completed' : 'Pending',
+      title: 'Quant Finance',
+      subtitle: 'Track daily LinkedIn post URL',
+      badge: metrics.file.completed ? 'Completed' : 'Incomplete',
       badgeClass: metrics.file.completed ? 'is-completed' : 'is-warning',
       metric: metrics.file.completed ? 1 : 0,
       target: 1,
-      unit: 'file edit',
+      unit: 'field URL',
       progress: metrics.file.completed ? 100 : 0,
-      activity: 'Active: Mon, Tue, Wed, Thu, Fri, Sat, Sun',
-      status: formatRelativeTime(metrics.file.lastEdit),
+      activity: 'Active: Mon, Thu',
+      status: metrics.file.lastUpdated ? formatRelativeTime(metrics.file.lastUpdated) : 'No update yet',
+      tone: 'tone-green',
+      canEditGoal: false
+    },
+    {
+      id: 'algo-trading',
+      isVisible: algoTradingActiveToday,
+      icon: <FileText size={18} />,
+      title: 'Algo Trading',
+      subtitle: 'Track edits in your Algo Trading files',
+      badge: !algoTradingActiveToday ? 'N/A Today' : metrics.algoTrading.completed ? 'Completed' : 'Incomplete',
+      badgeClass: !algoTradingActiveToday
+        ? 'is-neutral'
+        : metrics.algoTrading.completed
+          ? 'is-completed'
+          : 'is-warning',
+      metric: !algoTradingActiveToday ? 0 : metrics.algoTrading.completed ? 1 : 0,
+      target: 1,
+      unit: 'file edit',
+      progress: !algoTradingActiveToday ? 0 : metrics.algoTrading.completed ? 100 : 0,
+      activity: 'Active: Fri, Sat, Sun',
+      status: metrics.algoTrading.lastEdit
+        ? formatRelativeTime(metrics.algoTrading.lastEdit)
+        : algoTradingActiveToday
+          ? 'No update yet'
+          : 'N/A Today',
       tone: 'tone-green',
       canEditGoal: false
     },
     {
       id: 'reading',
+      isVisible: true,
       icon: <BookOpen size={18} />,
       title: 'Reading',
       subtitle: `Minimum ${goals.reading} pages read in specified digital book`,
@@ -1108,9 +1270,10 @@ function App(): React.JSX.Element {
     },
     {
       id: 'applications',
+      isVisible: jobHuntingActiveToday,
       icon: <Briefcase size={18} />,
       title: 'Job Hunting',
-      subtitle: 'Track daily posting URLs across LinkedIn, Indeed, and Wellfound',
+      subtitle: 'Track daily posting URLs across Indeed and Wellfound',
       badge: metrics.social.completed ? 'Completed' : jobHuntingActiveToday ? 'Incomplete' : 'N/A Today',
       badgeClass: metrics.social.completed
         ? 'is-completed'
@@ -1118,14 +1281,14 @@ function App(): React.JSX.Element {
           ? 'is-warning'
           : 'is-neutral',
       metric: metrics.social.completed
-        ? 3
-        : [metrics.social.linkedinUrl, metrics.social.indeedUrl, metrics.social.wellfoundUrl].filter(Boolean).length,
-      target: 3,
+        ? 2
+        : [metrics.social.indeedUrl, metrics.social.wellfoundUrl].filter(Boolean).length,
+      target: 2,
       unit: 'site URLs',
       progress: metrics.social.completed
         ? 100
-        : ([metrics.social.linkedinUrl, metrics.social.indeedUrl, metrics.social.wellfoundUrl].filter(Boolean).length / 3) * 100,
-      activity: 'Active: Mon, Tue, Wed, Thu, Fri',
+        : ([metrics.social.indeedUrl, metrics.social.wellfoundUrl].filter(Boolean).length / 2) * 100,
+      activity: 'Active: Tue, Wed, Sat',
       status: metrics.social.lastUpdated
         ? formatRelativeTime(metrics.social.lastUpdated)
         : jobHuntingActiveToday
@@ -1134,7 +1297,7 @@ function App(): React.JSX.Element {
       tone: 'tone-blue',
       canEditGoal: false
     }
-  ]
+  ].filter(card => card.isVisible)
 
   return (
     <div className="tracker-shell">
@@ -1175,6 +1338,40 @@ function App(): React.JSX.Element {
       <motion.main className="page-content" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
         {view === 'dashboard' && (
           <section className="dashboard-page">
+            <article className="gn-card dashboard-gn-card">
+              <div className="gn-header">
+                <div className="gn-title-wrap">
+                  <h2>Growth Naira (GN)</h2>
+                  <span className="gn-info" tabIndex={0} aria-label="Growth Naira settlement rules">
+                    <Info size={14} />
+                    <span className="gn-info-tooltip">
+                      Daily settlement: +1% for a 100% score day, -1% for a day below 100%.
+                    </span>
+                  </span>
+                </div>
+                <span className="gn-badge">Asset Value</span>
+              </div>
+              <div className="gn-content">
+                <div className="gn-balance-wrap">
+                  <span className="gn-label">Current Value</span>
+                  <strong className="gn-balance">{growthNaira.balance.toFixed(2)} GN</strong>
+                  <p className={`gn-change ${growthDeltaClass}`}>{growthDeltaText}</p>
+                </div>
+                <div className="gn-meta">
+                  <span>Initial grant: 100 GN</span>
+                  <span>Refills used: {growthNaira.refillCount}</span>
+                </div>
+                <button className="outline-button" onClick={recalculateGrowthNairaFromHistory}>
+                  Recalculate GN
+                </button>
+                {growthNaira.balance <= 0 && (
+                  <button className="primary-button gn-refill-button" onClick={refillGrowthNaira}>
+                    Refill To 100 GN
+                  </button>
+                )}
+              </div>
+            </article>
+
             <h2>Today&apos;s Tracking Fields</h2>
             <div className="tracking-grid">
               {dashboardCards.map((card) => (
@@ -1218,6 +1415,10 @@ function App(): React.JSX.Element {
                         openGoalEditor('reading')
                         return
                       }
+                      if (card.id === 'file') {
+                        openQuantFinanceModal()
+                        return
+                      }
                       if (card.id === 'applications') {
                         openApplicationModal()
                         return
@@ -1232,41 +1433,8 @@ function App(): React.JSX.Element {
               ))}
             </div>
 
-            <article className="gn-card dashboard-gn-card">
-              <div className="gn-header">
-                <div className="gn-title-wrap">
-                  <h2>Growth Naira (GN)</h2>
-                  <span className="gn-info" tabIndex={0} aria-label="Growth Naira settlement rules">
-                    <Info size={14} />
-                    <span className="gn-info-tooltip">
-                      Daily settlement: +1% for a 100% score day, -2% for a day below 100%.
-                    </span>
-                  </span>
-                </div>
-                <span className="gn-badge">Asset Value</span>
-              </div>
-              <div className="gn-content">
-                <div className="gn-balance-wrap">
-                  <span className="gn-label">Current Value</span>
-                  <strong className="gn-balance">{growthNaira.balance.toFixed(2)} GN</strong>
-                  <p className={`gn-change ${growthDeltaClass}`}>{growthDeltaText}</p>
-                </div>
-                <div className="gn-meta">
-                  <span>Initial grant: 100 GN</span>
-                  <span>Refills used: {growthNaira.refillCount}</span>
-                </div>
-                <button className="outline-button" onClick={recalculateGrowthNairaFromHistory}>
-                  Recalculate GN
-                </button>
-                {growthNaira.balance <= 0 && (
-                  <button className="primary-button gn-refill-button" onClick={refillGrowthNaira}>
-                    Refill To 100 GN
-                  </button>
-                )}
-              </div>
-            </article>
-
             <Reader
+              currentDateKey={currentDateKey}
               onProgress={(pages) =>
                 setMetrics((prev) => ({
                   ...prev,
@@ -1283,7 +1451,7 @@ function App(): React.JSX.Element {
                   <strong>Tech4mation:</strong> Track commits from local repositories on weekdays only (Mon-Fri).
                 </li>
                 <li>
-                  <strong>Quant Finance/Algo:</strong> Monitor file changes at your configured Quant Statisticals directory.
+                  <strong>Quant Finance:</strong> Track a daily LinkedIn post URL.
                 </li>
                 <li>
                   <strong>Reading:</strong> Integrate with e-reader apps or PDF viewers to track page progress.
@@ -1483,6 +1651,55 @@ function App(): React.JSX.Element {
       </AnimatePresence>
 
       <AnimatePresence>
+        {showQuantFinanceModal && (
+          <motion.div
+            className="settings-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.section
+              className="settings-modal"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 16 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="settings-header">
+                <h3>Update Quant Finance URL</h3>
+                <button className="icon-button" onClick={() => setShowQuantFinanceModal(false)} aria-label="Close quant finance modal">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="settings-form">
+                <label>
+                  LinkedIn Post URL
+                  <input
+                    value={quantFinanceForm.linkedinUrl}
+                    onChange={(event) =>
+                      setQuantFinanceForm((prev) => ({ ...prev, linkedinUrl: event.target.value }))
+                    }
+                    placeholder="https://www.linkedin.com/feed/update/urn:li:activity:[target ID]/..."
+                  />
+                </label>
+                {quantFinanceFormError && <p className="ai-insight-error">{quantFinanceFormError}</p>}
+              </div>
+
+              <div className="settings-actions">
+                <button className="primary-button" onClick={saveQuantFinanceLink}>
+                  Save URL
+                </button>
+                <button className="outline-button" onClick={() => setShowQuantFinanceModal(false)}>
+                  Cancel
+                </button>
+              </div>
+            </motion.section>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {showApplicationModal && (
           <motion.div
             className="settings-overlay"
@@ -1498,23 +1715,13 @@ function App(): React.JSX.Element {
               transition={{ duration: 0.2 }}
             >
               <div className="settings-header">
-                <h3>Update Daily Posting URLs</h3>
+                <h3>Update Job Hunting URLs</h3>
                 <button className="icon-button" onClick={() => setShowApplicationModal(false)} aria-label="Close application modal">
                   <X size={16} />
                 </button>
               </div>
 
               <div className="settings-form">
-                <label>
-                  LinkedIn Post URL
-                  <input
-                    value={applicationForm.linkedinUrl}
-                    onChange={(event) =>
-                      setApplicationForm((prev) => ({ ...prev, linkedinUrl: event.target.value }))
-                    }
-                    placeholder="https://www.linkedin.com/feed/update/urn:li:activity:[target ID]/..."
-                  />
-                </label>
                 <label>
                   Indeed Job URL
                   <input
