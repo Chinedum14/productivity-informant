@@ -275,6 +275,10 @@ app.whenReady().then(() => {
   // Initialize Trackers
   new GitHubTracker()
   new FileTracker('C:\\Users\\Connekt.me\\Documents\\Quant Statisticals')
+  new FileTracker(
+    'C:\\Users\\Connekt.me\\Documents\\Algo Trading',
+    'get-algo-trading-file-edit-status'
+  )
 
   ipcMain.handle('toggle-window-maximize', () => {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]

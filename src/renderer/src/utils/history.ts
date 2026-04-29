@@ -3,6 +3,7 @@ export interface DailyMetrics {
   githubCount: number;
   githubCompleted: boolean;
   fileCompleted: boolean;
+  algoTradingCompleted?: boolean;
   readingPages: number;
   readingCompleted: boolean;
   socialCompleted?: boolean;

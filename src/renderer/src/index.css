@@ -173,7 +173,7 @@ input {
 
 .tracking-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   align-items: stretch;
 }
@@ -191,6 +191,10 @@ input {
   display: flex;
   flex-direction: column;
   min-height: 315px;
+}
+
+.tracking-card.full-width {
+  grid-column: 1 / -1;
 }
 
 .card-top {
@@ -462,7 +466,7 @@ input {
 }
 
 .dashboard-gn-card {
-  margin-top: 14px;
+  margin: 0 0 14px;
 }
 
 .gn-header {

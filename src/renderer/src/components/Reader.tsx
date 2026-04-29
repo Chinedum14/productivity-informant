@@ -9,6 +9,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.m
 
 interface ReaderProps {
   onProgress: (pages: number) => void
+  currentDateKey: string
 }
 
 interface LoadedPdfPayload {
@@ -25,6 +26,7 @@ interface RecentPdfState {
 }
 
 const RECENT_PDF_KEY = 'reader-recent-pdf'
+const PAGE_DWELL_MS = 5000
 
 function localDateKey(date: Date): string {
   const year = date.getFullYear()
@@ -53,13 +55,13 @@ function toUint8Array(value: unknown): Uint8Array | null {
   return null
 }
 
-export function Reader({ onProgress }: ReaderProps) {
+export function Reader({ onProgress, currentDateKey }: ReaderProps) {
   const [pdfSourceUrl, setPdfSourceUrl] = useState<string | null>(null)
   const [pdfFileName, setPdfFileName] = useState('')
   const [pdfFilePath, setPdfFilePath] = useState('')
   const [numPages, setNumPages] = useState<number>(0)
   const [pageNumber, setPageNumber] = useState<number>(1)
-  const [_pagesViewedToday, _setPagesViewedToday] = useState<Set<number>>(new Set())
+  const [_pagesViewedToday, _setPagesViewedToday] = useState<Set<string>>(new Set())
   const [isWindowMaximized, setIsWindowMaximized] = useState(false)
   const [isReaderExpanded, setIsReaderExpanded] = useState(false)
   const [recentPdf, setRecentPdf] = useState<RecentPdfState | null>(null)
@@ -104,14 +106,21 @@ export function Reader({ onProgress }: ReaderProps) {
   }
 
   useEffect(() => {
-    const today = localDateKey(new Date())
-    const saved = localStorage.getItem(`viewed-${today}`)
+    const saved = localStorage.getItem(`viewed-${currentDateKey}`)
     if (saved) {
-      const parsed = JSON.parse(saved)
-      _setPagesViewedToday(new Set(parsed))
-      onProgress(parsed.length)
+      const parsed = JSON.parse(saved) as unknown
+      // Legacy saves were number[] (page-only, cross-PDF deduped). Coerce to string
+      // so today's count isn't lost, but new entries written as `${filePath}#${page}`.
+      const normalized = Array.isArray(parsed) ? parsed.map((v) => String(v)) : []
+      _setPagesViewedToday(new Set(normalized))
+      onProgress(normalized.length)
+    } else {
+      _setPagesViewedToday(new Set())
+      onProgress(0)
     }
+  }, [currentDateKey])
 
+  useEffect(() => {
     const savedRecent = localStorage.getItem(RECENT_PDF_KEY)
     if (savedRecent) {
       const parsedRecent: RecentPdfState = JSON.parse(savedRecent)
@@ -196,7 +205,6 @@ export function Reader({ onProgress }: ReaderProps) {
       recentPdf && recentPdf.filePath === pdfFilePath ? Math.min(Math.max(recentPdf.lastPage, 1), numPages) : 1
 
     setPageNumber(desiredStartPage)
-    recordPageView(desiredStartPage)
 
     if (pdfFilePath) {
       persistRecentPdf({
@@ -208,25 +216,47 @@ export function Reader({ onProgress }: ReaderProps) {
     }
   }
 
-  function recordPageView(page: number) {
-    _setPagesViewedToday((prev) => {
-      const next = new Set(prev)
-      const prevSize = next.size
-      next.add(page)
+  function recordPageView(filePath: string, page: number) {
+    if (!filePath || page < 1) return
+    const viewKey = `${filePath}#${page}`
+    const today = localDateKey(new Date())
+    const viewedKey = `viewed-${today}`
 
-      if (next.size !== prevSize) {
-        const today = localDateKey(new Date())
-        localStorage.setItem(`viewed-${today}`, JSON.stringify(Array.from(next)))
-
-        const readingData = JSON.parse(localStorage.getItem(`reading-${today}`) || '{"pages": 0}')
-        readingData.pages = next.size
-        localStorage.setItem(`reading-${today}`, JSON.stringify(readingData))
-
-        onProgress(next.size)
+    let todaySet: Set<string>
+    const raw = localStorage.getItem(viewedKey)
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        const normalized = Array.isArray(parsed) ? parsed.map((v) => String(v)) : []
+        todaySet = new Set(normalized)
+      } catch {
+        todaySet = new Set()
       }
-      return next
-    })
+    } else {
+      todaySet = new Set()
+    }
+
+    if (!todaySet.has(viewKey)) {
+      todaySet.add(viewKey)
+      localStorage.setItem(viewedKey, JSON.stringify(Array.from(todaySet)))
+      const readingData = JSON.parse(localStorage.getItem(`reading-${today}`) || '{"pages": 0}')
+      readingData.pages = todaySet.size
+      localStorage.setItem(`reading-${today}`, JSON.stringify(readingData))
+    }
+
+    _setPagesViewedToday(todaySet)
+    onProgress(todaySet.size)
   }
+
+  useEffect(() => {
+    if (!pdfFilePath || pageNumber < 1 || numPages < 1) return
+    const targetPath = pdfFilePath
+    const targetPage = pageNumber
+    const timer = window.setTimeout(() => {
+      recordPageView(targetPath, targetPage)
+    }, PAGE_DWELL_MS)
+    return () => window.clearTimeout(timer)
+  }, [pdfFilePath, pageNumber, numPages])
 
   async function openSelectedPdf() {
     try {
@@ -278,7 +308,6 @@ export function Reader({ onProgress }: ReaderProps) {
     setPageNumber((prevPageNumber) => {
       const next = prevPageNumber + offset
       if (next >= 1 && next <= numPages) {
-        recordPageView(next)
         if (pdfFilePath) {
           persistRecentPdf({
             filePath: pdfFilePath,
