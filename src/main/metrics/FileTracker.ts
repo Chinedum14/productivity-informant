@@ -7,9 +7,11 @@ export class FileTracker {
   private watcher: any
   private lastEditTime = 0
   private targetPath: string
+  private channelName: string
 
-  constructor(targetPath: string) {
+  constructor(targetPath: string, channelName = 'get-file-edit-status') {
     this.targetPath = targetPath
+    this.channelName = channelName
     this.initWatcher()
     this.initIpc()
   }
@@ -72,7 +74,7 @@ export class FileTracker {
   }
 
   private initIpc(): void {
-    ipcMain.handle('get-file-edit-status', () => {
+    ipcMain.handle(this.channelName, () => {
       // Re-scan for correctness in case external edits happened between watcher events.
       this.refreshLatestEditFromDisk()
       const today = new Date().setHours(0, 0, 0, 0)

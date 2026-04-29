@@ -72,7 +72,7 @@ A built-in behavioral growth indicator:
 1. Start value: 100 GN
 2. Daily settlement:
    - 100% score day: +1%
-   - <100% score day: -2%
+   - <100% score day: -1%
 3. Supports refill when value reaches 0
 4. Includes recalculation from historical records to correct drift/mismatch
 
